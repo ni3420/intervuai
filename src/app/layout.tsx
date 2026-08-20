@@ -4,6 +4,7 @@ import { Metadata } from "next"
 import { ThemeProvider } from "@/providers/theme-provider"
 import { ClerkProvider } from "@clerk/nextjs"
 import { ConvexClientProvider } from "@/providers/ConvexClientProvider"
+import Providers from "@/providers/QueryClientProvider"
 
 const geistSans = Geist({
   variable: "--font-sans",
@@ -50,10 +51,14 @@ export default function RootLayout({
           ]}
         >
           <ClerkProvider>
-            <ConvexClientProvider>
+              <ConvexClientProvider>
+            <Providers>
+
             {children}
+            </Providers>
 
             </ConvexClientProvider>
+            
             </ClerkProvider>
         </ThemeProvider>
       </body>
