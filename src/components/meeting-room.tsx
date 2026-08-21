@@ -21,107 +21,16 @@ interface MeetingRoomProps {
   onLeave: () => void;
 }
 
-function VoiceTransfer({
-  callId,
-  userId,
-}: {
-  callId: string;
-  userId: string;
-}) {
-  const { useLocalParticipant } = useCallStateHooks();
-  const localParticipant = useLocalParticipant();
-
-  const recorderRef = useRef<MediaRecorder | null>(null);
-
-  useEffect(() => {
-    const audioStream = localParticipant?.audioStream;
-    console.log("audiostream",audioStream)
-
-    if (!audioStream) {
-      return;
-    }
-
-    if (!audioStream.getAudioTracks().length) {
-      return;
-    }
-
-    if (recorderRef.current) {
-      return;
-    }
-
-    let mimeType = "";
-
-    if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) {
-      mimeType = "audio/webm;codecs=opus";
-    } else if (MediaRecorder.isTypeSupported("audio/webm")) {
-      mimeType = "audio/webm";
-    }
-
-    const recorder = mimeType
-      ? new MediaRecorder(audioStream, { mimeType })
-      : new MediaRecorder(audioStream);
-
-    recorderRef.current = recorder;
-    console.log(recorder,"recorder")
-
-    socket.emit("voice_start", {
-      callId,
-      userId,
-    });
-
-    recorder.ondataavailable = async (event) => {
-      if (!event.data || event.data.size === 0) {
-        return;
-      }
-
-      const buffer = await event.data.arrayBuffer();
-      
-
-      socket.emit("voice_chunk", {
-        callId,
-        userId,
-        audio: buffer,
-      });
-    };
-
-    recorder.onerror = (event) => {
-      console.error("Voice recorder error:", event);
-    };
-
-    recorder.onstop = () => {
-      socket.emit("voice_end", {
-        callId,
-        userId,
-      });
-
-      recorderRef.current = null;
-    };
-
-    recorder.start(250);
-
-    return () => {
-      if (recorder.state !== "inactive") {
-        recorder.stop();
-      }
-
-      recorderRef.current = null;
-    };
-  }, [localParticipant?.audioStream, callId, userId]);
-
-  return null;
-}
-
 function SingleInterviewStage() {
-  const { useParticipants, useLocalParticipant } =
-    useCallStateHooks();
+  const { useParticipants, useLocalParticipant } = useCallStateHooks();
 
   const participants = useParticipants();
   const localParticipant = useLocalParticipant();
 
   const aiParticipant = participants.find(
-    (p) =>
-      p.userId === "ai-interviewer" ||
-      p.userId !== localParticipant?.userId
+    (participant) =>
+      participant.userId === "ai-interviewer" ||
+      participant.userId !== localParticipant?.userId
   );
 
   return (
@@ -201,65 +110,26 @@ export default function MeetingRoom({
   const joinedRef = useRef(false);
   const leavingRef = useRef(false);
 
-  const processedCaptionsRef = useRef<Set<string>>(
-    new Set()
+  const transcriptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
   );
-
-  const captionTimerRef = useRef<ReturnType<
-    typeof setTimeout
-  > | null>(null);
 
   const latestTranscriptRef = useRef("");
 
-  const sendTranscriptToAgent = async (
-    transcript: string
-  ) => {
-    const cleanedTranscript = transcript.trim();
+  const sendTranscript = (transcript: string) => {
+    const text = transcript.trim();
 
-    if (!cleanedTranscript) {
+    if (!text) {
       return;
     }
 
-    console.log(
-      "[Interview] Candidate transcript:",
-      cleanedTranscript
-    );
+    socket.emit("interview_transcript", {
+      callId,
+      userId,
+      transcript: text,
+    });
 
-    try {
-      const response = await fetch("/api/interview", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          callId,
-          userId,
-          transcript: cleanedTranscript,
-        }),
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-
-        throw new Error(
-          `Interview API failed (${response.status}): ${errorText}`
-        );
-      }
-
-      const data = await response.json();
-
-      console.log(
-        "[Interview] AI response:",
-        data.response
-      );
-
-      return data;
-    } catch (error) {
-      console.error(
-        "[Interview] Failed to send transcript:",
-        error
-      );
-    }
+    latestTranscriptRef.current = "";
   };
 
   const handleClosedCaption = (event: any) => {
@@ -275,67 +145,20 @@ export default function MeetingRoom({
       return;
     }
 
-    const speakerId =
-      caption.speaker_id ||
-      caption.user?.id;
+    const speakerId = caption.speaker_id || caption.user?.id;
 
     if (speakerId !== userId) {
       return;
     }
 
-    const captionId = [
-      speakerId,
-      caption.start_time,
-      caption.end_time,
-      text,
-    ].join(":");
-
-    if (
-      processedCaptionsRef.current.has(
-        captionId
-      )
-    ) {
-      return;
-    }
-
-    processedCaptionsRef.current.add(
-      captionId
-    );
-
-    if (
-      processedCaptionsRef.current.size >
-      500
-    ) {
-      const firstValue =
-        processedCaptionsRef.current.values()
-          .next().value;
-
-      if (firstValue) {
-        processedCaptionsRef.current.delete(
-          firstValue
-        );
-      }
-    }
-
     latestTranscriptRef.current = text;
 
-    if (captionTimerRef.current) {
-      clearTimeout(captionTimerRef.current);
+    if (transcriptTimerRef.current) {
+      clearTimeout(transcriptTimerRef.current);
     }
 
-    captionTimerRef.current = setTimeout(() => {
-      const finalTranscript =
-        latestTranscriptRef.current.trim();
-
-      if (!finalTranscript) {
-        return;
-      }
-
-      latestTranscriptRef.current = "";
-
-      void sendTranscriptToAgent(
-        finalTranscript
-      );
+    transcriptTimerRef.current = setTimeout(() => {
+      sendTranscript(latestTranscriptRef.current);
     }, 1200);
   };
 
@@ -347,30 +170,16 @@ export default function MeetingRoom({
     joinedRef.current = true;
 
     let activeCall: Call | null = null;
-
-    let unsubscribeCaption:
-      | (() => void)
-      | null = null;
-
-    let unsubscribeSessionEnded:
-      | (() => void)
-      | null = null;
+    let unsubscribeCaption: (() => void) | null = null;
+    let unsubscribeSessionEnded: (() => void) | null = null;
 
     const initCall = async () => {
       try {
-        console.log(
-          "[Interview] Initializing Stream call:",
-          callId
-        );
+        const currentCall = client.call("default", callId);
 
-        const myCall = client.call(
-          "default",
-          callId
-        );
+        activeCall = currentCall;
 
-        activeCall = myCall;
-
-        await myCall.getOrCreate({
+        await currentCall.getOrCreate({
           data: {
             members: [
               {
@@ -381,49 +190,33 @@ export default function MeetingRoom({
           },
         });
 
-        await myCall.join({
+        await currentCall.join({
           create: true,
         });
 
-        console.log(
-          "[Interview] Joined Stream call"
-        );
+        await currentCall.camera.disable();
+        await currentCall.microphone.enable();
 
-        await myCall.camera.disable();
-
-        await myCall.microphone.enable();
-
-        console.log(
-          "[Interview] Candidate microphone enabled"
-        );
-
-        unsubscribeCaption = myCall.on(
+        unsubscribeCaption = currentCall.on(
           "call.closed_caption",
           handleClosedCaption
         );
 
-        await myCall.startClosedCaptions({
+        await currentCall.startClosedCaptions({
           language: "en",
         });
 
-        unsubscribeSessionEnded = myCall.on(
+        unsubscribeSessionEnded = currentCall.on(
           "call.session_ended",
-          () => {
-            onLeave();
-          }
+          onLeave
         );
 
-        setCall(myCall);
-      } catch (err: unknown) {
-        console.error(
-          "[Interview] Failed to initialize call:",
-          err
-        );
+        setCall(currentCall);
+      } catch (err) {
+        console.error("[Interview] Failed to initialize call:", err);
 
         setError(
-          err instanceof Error
-            ? err.message
-            : "Failed to join call"
+          err instanceof Error ? err.message : "Failed to join call"
         );
       }
     };
@@ -431,38 +224,22 @@ export default function MeetingRoom({
     void initCall();
 
     return () => {
-      if (captionTimerRef.current) {
-        clearTimeout(
-          captionTimerRef.current
-        );
-
-        captionTimerRef.current = null;
+      if (transcriptTimerRef.current) {
+        clearTimeout(transcriptTimerRef.current);
+        transcriptTimerRef.current = null;
       }
 
       unsubscribeCaption?.();
       unsubscribeSessionEnded?.();
 
-      if (
-        activeCall &&
-        !leavingRef.current
-      ) {
+      if (activeCall && !leavingRef.current) {
         leavingRef.current = true;
 
-        activeCall
-          .stopClosedCaptions()
-          .catch(() => {});
-
-        activeCall
-          .leave()
-          .catch(() => {});
+        void activeCall.stopClosedCaptions().catch(() => {});
+        void activeCall.leave().catch(() => {});
       }
     };
-  }, [
-    client,
-    callId,
-    userId,
-    onLeave,
-  ]);
+  }, [client, callId, userId, onLeave]);
 
   const handleLeaveClick = async () => {
     if (leavingRef.current) {
@@ -472,12 +249,15 @@ export default function MeetingRoom({
 
     leavingRef.current = true;
 
-    if (captionTimerRef.current) {
-      clearTimeout(
-        captionTimerRef.current
-      );
+    if (transcriptTimerRef.current) {
+      clearTimeout(transcriptTimerRef.current);
+      transcriptTimerRef.current = null;
+    }
 
-      captionTimerRef.current = null;
+    const finalTranscript = latestTranscriptRef.current.trim();
+
+    if (finalTranscript) {
+      sendTranscript(finalTranscript);
     }
 
     if (call) {
@@ -485,17 +265,9 @@ export default function MeetingRoom({
         await call.stopClosedCaptions();
         await call.leave();
       } catch (err) {
-        console.error(
-          "[Interview] Error leaving call:",
-          err
-        );
+        console.error("[Interview] Error leaving call:", err);
       }
     }
-
-    socket.emit("voice_end", {
-      callId,
-      userId,
-    });
 
     onLeave();
   };
@@ -503,9 +275,7 @@ export default function MeetingRoom({
   if (error) {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center bg-gray-900 text-white gap-4">
-        <p className="text-red-400 text-lg font-medium">
-          {error}
-        </p>
+        <p className="text-red-400 text-lg font-medium">{error}</p>
 
         <button
           onClick={onLeave}
@@ -533,20 +303,13 @@ export default function MeetingRoom({
 
   return (
     <StreamCall call={call}>
-      <VoiceTransfer
-        callId={callId}
-        userId={userId}
-      />
-
       <div className="min-h-screen bg-linear-to-br from-gray-900 via-gray-800 to-gray-900 text-white p-4 md:p-6">
         <div className="container mx-auto h-[calc(100vh-3rem)] grid grid-cols-1 lg:grid-cols-[1fr_420px] gap-6">
           <div className="flex flex-col gap-4 h-full">
             <SingleInterviewStage />
 
             <div className="flex items-center justify-center p-3 bg-gray-800 border border-gray-700 rounded-xl shadow-lg">
-              <CallControls
-                onLeave={handleLeaveClick}
-              />
+              <CallControls onLeave={handleLeaveClick} />
             </div>
           </div>
 
